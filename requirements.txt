@@ -1,0 +1,13 @@
+# Core
+# numpy
+# scipy
+# matplotlib
+# tqdm
+
+# Jaxley ecosystem
+jaxley
+jaxley-mech
+
+# # Common utilities
+# h5py
+# pandas
