@@ -24,9 +24,10 @@ def ln_forward(params, stim, *, K, dt, n, max_tau, norm="L2", eps=1e-12):
     k = K_func(tau_j, tau_h, n, params["alpha_j"], params["alpha_h"], K, dt)
 
     if norm == "L2":
-        k = k / (jnp.sqrt(jnp.sum(k**2) * dt) + eps)
-
-    # --- convolution per trial ---
+        norm_k = jnp.sqrt(jnp.sum(k**2) * dt)
+        norm_k = jnp.maximum(norm_k, 1e-2)      # floor to prevent huge grads
+        k = k / (norm_k + 1e-12)                # the +1e-12 is optional now
+        # --- convolution per trial ---
     def conv1(tr):
         return jnp.convolve(tr, k, mode="full")[: tr.shape[0]]
 
@@ -35,13 +36,18 @@ def ln_forward(params, stim, *, K, dt, n, max_tau, norm="L2", eps=1e-12):
     # --- static nonlinearity ---
     beta  = softplus(params["log_beta"]) + 1e-6  # slope > 0
     shift = params["shift"]
-    drive = softplus(beta * (L - shift))
+    gain  = softplus(params["log_gain"]) + 1e-6    # gain > 0
+    drive = gain * softplus(beta * (L - shift))
 
     return drive, L, k
 
-def current_map(drive, params):
-    # params contains DC and scale
-    return params["DC"] + params["scale"] * drive  # pA, at 60 Hz
+# def current_map(drive, params):
+#     # params contains DC and scale
+#     return params["DC"] + params["scale"] * drive  # pA, at 60 Hz
+
+# def current_map(drive, params):
+#     # params contains DC and scale
+#     return params["DC"] + drive  # drive already has a scale factor, at 60 Hz
 
 def upsample_zoh_chunk_repeat(I_frame_one: jnp.ndarray, 
                               t0_f: int, 
