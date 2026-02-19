@@ -4,6 +4,9 @@ from jax.nn import sigmoid, softplus
 import jaxley as jx
 from jax.lax import stop_gradient
 # from jax.numpy.linalg import norm
+def softplus_beta(x, beta):
+    # PyTorch: softplus(x, beta) = (1/beta) * log(1 + exp(beta*x))
+    return jax.nn.softplus(beta * x) / beta
 
 def K_func(tau_j, tau_h, n, alpha_j, alpha_h, K_T, dt, eps=1e-12):
     # JIT-safe: arange uses an integer stop, not a tracer step
@@ -37,7 +40,7 @@ def ln_forward(params, stim, *, K, dt, n, max_tau, norm="L2", eps=1e-12):
     beta  = softplus(params["log_beta"]) + 1e-6  # slope > 0
     shift = params["shift"]
     gain  = softplus(params["log_gain"]) + 1e-6    # gain > 0
-    drive = gain * softplus(beta * (L - shift))
+    drive = gain * softplus_beta(L - shift, beta=beta)
 
     return drive, L, k
 
