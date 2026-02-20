@@ -6,7 +6,7 @@ from jax.lax import stop_gradient
 # from jax.numpy.linalg import norm
 def softplus_beta(x, beta):
     # PyTorch: softplus(x, beta) = (1/beta) * log(1 + exp(beta*x))
-    return jax.nn.softplus(beta * x) / beta
+    return jax.nn.softplus(beta * x) / (beta + 1e-12)  # avoid division by zero
 
 def K_func(tau_j, tau_h, n, alpha_j, alpha_h, K_T, dt, eps=1e-12):
     # JIT-safe: arange uses an integer stop, not a tracer step
@@ -18,7 +18,18 @@ def K_func(tau_j, tau_h, n, alpha_j, alpha_h, K_T, dt, eps=1e-12):
     K_h = alpha_h * (x2**n) * jnp.exp(-n*(x2 - 1.0))
     return K_j - K_h
 
-def ln_forward(params, stim, *, K, dt, n, max_tau, norm="L2", eps=1e-12):
+def ln_forward(
+    params,
+    stim,
+    *,
+    K,
+    dt,
+    n,
+    max_tau,
+    nl_standardize=True,
+    nl_scale_floor=1e-2,
+    eps=1e-12,
+):
     # --- time constants (bounded to (0, max_tau)) ---
     tau_j = sigmoid(params["logit_tau1"]) * max_tau
     tau_h = sigmoid(params["logit_tau2"]) * max_tau
@@ -26,23 +37,40 @@ def ln_forward(params, stim, *, K, dt, n, max_tau, norm="L2", eps=1e-12):
     # --- biphasic kernel ---
     k = K_func(tau_j, tau_h, n, params["alpha_j"], params["alpha_h"], K, dt)
 
-    if norm == "L2":
-        norm_k = jnp.sqrt(jnp.sum(k**2) * dt)
-        norm_k = jnp.maximum(norm_k, 1e-2)      # floor to prevent huge grads
-        k = k / (norm_k + 1e-12)                # the +1e-12 is optional now
+    
+    norm_k = jnp.sqrt(jnp.sum(k**2) * dt)
+    norm_k = jnp.maximum(norm_k, 1e-2)      # floor to prevent huge grads
+    k = k / (norm_k + 1e-12)                # the +1e-12 is optional now
         # --- convolution per trial ---
     def conv1(tr):
         return jnp.convolve(tr, k, mode="full")[: tr.shape[0]]
 
     L = jax.vmap(conv1)(stim) if stim.ndim == 2 else conv1(stim)
 
-    # --- static nonlinearity ---
-    beta  = softplus(params["log_beta"]) + 1e-6  # slope > 0
-    shift = params["shift"]
-    gain  = softplus(params["log_gain"]) + 1e-6    # gain > 0
-    drive = gain * softplus_beta(L - shift, beta=beta)
+    # Normalize LN drive scale before NL so gain is identifiable and stable.
+    # We use detached moments to avoid a gradient path through batch statistics.
+    if nl_standardize:
+        if L.ndim == 2:
+            L_mean = stop_gradient(jnp.mean(L, axis=1, keepdims=True))
+            L_std = stop_gradient(jnp.std(L, axis=1, keepdims=True))
+        else:
+            L_mean = stop_gradient(jnp.mean(L))
+            L_std = stop_gradient(jnp.std(L))
+        L_std = jnp.maximum(L_std, nl_scale_floor)
+        L_nl = (L - L_mean) / (L_std + eps)
+    else:
+        L_nl = L
 
-    return drive, L, k
+    # --- static nonlinearity ---
+    beta  = softplus(params["log_beta"]) + 1e-6
+    shift = params["shift"]
+    gain  = softplus(params["log_gain"]) + 1e-6
+    r0    = softplus(params["log_r0"])  + 1e-6
+
+    # drive = softplus(beta * (L_nl - shift))
+    drive = softplus_beta(L_nl - shift, beta)
+    rate_hz = r0 + gain * drive
+    return rate_hz, L, k
 
 # def current_map(drive, params):
 #     # params contains DC and scale

@@ -90,3 +90,23 @@ def voltage_batch_to_spikes(
 def idx_to_times(spk_idx_padded, dt_v):
     # -1 stays -1*dt_v; we'll mask later using n_spk
     return spk_idx_padded.astype(jnp.float32) * dt_v
+
+
+def poisson_counts_from_rate(rate_hz, *, dt, key, eps=1e-8, max_mu=1e6):
+    """
+    Sample Poisson spike counts per frame from rate (Hz).
+
+    Args:
+      rate_hz: (..., T) or (T,) nonnegative rate in Hz.
+      dt: seconds per frame.
+      key: JAX PRNG key.
+      eps: lower clip for expected count.
+      max_mu: upper clip for expected count.
+
+    Returns:
+      y_counts: same shape as rate_hz, int32 Poisson counts per frame.
+      mu: same shape as rate_hz, expected counts per frame.
+    """
+    mu = jnp.clip(rate_hz * dt, eps, max_mu)
+    y_counts = jax.random.poisson(key, lam=mu).astype(jnp.int32)
+    return y_counts, mu
